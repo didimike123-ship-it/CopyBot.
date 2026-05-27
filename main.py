@@ -10,8 +10,10 @@ BOT_TOKEN = "8984373560:AAEApSz6JqW5toSTC8fHfQhbP13_7cJNlvY"
 
 app = Flask(__name__)
 
+# တစ်ရက်တာ အရောင်းစာရင်းများကို သိမ်းဆည်းရန် Data Structure
 group_sales_reports = {}
 
+# အော်ပရေတာအလိုက် ပလန်အမည်များ
 OPERATOR_PLANS = {
     "MYTEL": ["o15k plan", "o20k plan", "n15k plan", "n20k plan", "n25k plan", "n30k plan", "1gb", "1.6gb", "3gb", "5gb", "10gb", "on90", "on180", "on69", "on138", "any13", "any41", "any114"],
     "ATOM": ["15k plan", "25k plan", "870(3d)", "1gb(3d)", "1gb(1m)", "point(p)500", "any 150", "any 100", "on 150"],
@@ -40,52 +42,42 @@ def process_phone_logic(original_text):
     if not original_text:
         return None, None, None
 
-    match = re.search(r'(?:\+?95[\s*]*9|0[\s*]*9)[\d\s*]{6,20}', original_text)
+    # ဒုတိယကုဒ်မှ ပိုမိုကောင်းမွန်သော ဖုန်းနံပါတ်ရှာဖွေသည့် စနစ်ကို အသုံးပြုထားသည် (Space ခြားနေသည်များကိုပါ ရှာပေးနိုင်သည်)
+    # +959 သို့မဟုတ် 09 နဲ့စပြီး နောက်မှာ space ပါပါ မပါပါ ဂဏန်းတွေကို ဖမ်းယူမည်
+    pattern = r'(?:\+?95[\s*]*9|0[\s*]*9)[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d?'
+    match = re.search(pattern, original_text)
     if not match:
         return None, None, None
 
-    raw_matched_chunk = match.group(0)
+    exact_phone_raw = match.group(0)
     
-    phone_digits = "".join(re.findall(r'\d+', raw_matched_chunk))
+    # ဂဏန်းများ သီးသန့်ထုတ်ယူခြင်း
+    phone_digits = "".join(re.findall(r'\d+', exact_phone_raw))
     
+    # 959 ကို 09 သို့ ပြောင်းလဲခြင်း
     if phone_digits.startswith('959'):
         phone_digits = "09" + phone_digits[3:]
 
-    if not (10 <= len(phone_digits) <= 11):
-        return None, None, None
-
-    actual_phone_len_in_raw = 0
-    digit_count = 0
-    clean_digits_for_check = "959" if raw_matched_chunk.strip().replace(" ","").startswith("+959") or raw_matched_chunk.strip().replace(" ","").startswith("959") else "09"
-    target_len = 11 if clean_digits_for_check == "959" else (len(phone_digits) + 1 if "959" in raw_matched_chunk else len(phone_digits))
-    
-    for idx, char in enumerate(raw_matched_chunk):
-        if char.isdigit():
-            digit_count += 1
-        actual_phone_len_in_raw = idx + 1
-        if phone_digits.endswith("".join(re.findall(r'\d+', raw_matched_chunk[:idx+1]))[-5:] if len(phone_digits)>=5 else "???") and "".join(re.findall(r'\d+', raw_matched_chunk[:idx+1])) == ( "959"+phone_digits[2:] if clean_digits_for_check=="959" else phone_digits ):
-            break
-
-    exact_phone_raw = raw_matched_chunk[:actual_phone_len_in_raw]
-    
+    # စာသားထဲမှ ဖုန်းနံပါတ်ပါသောအပိုင်းကို ဖယ်ထုတ်ပြီး ကျန်ရှိသော စာသားကို သန့်စင်ခြင်း
     clean_text = original_text.replace(exact_phone_raw, ' ', 1).strip()
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
     final_copy_text = ""
     op_name = ""
 
+    # အော်ပရေတာ ခွဲခြားခြင်းနှင့် Format ပြောင်းလဲခြင်း
     if phone_digits.startswith('097') and len(phone_digits) == 11:
-        final_copy_text = phone_digits[1:]
+        final_copy_text = phone_digits[1:]  # ရှေ့ဆုံးက 0 ဖြုတ်ပြီး 97... ပြန်ပြောင်းမည်
         op_name = "ATOM"
     elif phone_digits.startswith('096') and (len(phone_digits) == 10 or len(phone_digits) == 11):
-        final_copy_text = phone_digits
+        final_copy_text = phone_digits      # 096... အတိုင်းထားမည်
         op_name = "MYTEL"
     elif phone_digits.startswith(('092', '094', '098')) and len(phone_digits) == 11:
-        base_part = phone_digits[2:]
+        base_part = phone_digits[2:]        # ရှေ့က 09 ဖြုတ်ပြီး 2... / 4... / 8... ပြောင်းမည်
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "MPT"
     elif phone_digits.startswith('099') and len(phone_digits) == 11:
-        base_part = phone_digits[1:]
+        base_part = phone_digits[1:]        # ရှေ့က 0 ဖြုတ်ပြီး 99... ပြောင်းမည်
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "OOREDOO"
     else:
@@ -107,6 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.message.chat_id
         current_date = datetime.now().strftime("%Y-%m-%d")
 
+        # ရက်စွဲအလိုက် စာရင်းဇယား တည်ဆောက်ခြင်း
         if chat_id not in group_sales_reports:
             group_sales_reports[chat_id] = {"date": current_date, "data": {}}
 
@@ -120,6 +113,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         report["data"][op_name][plan_name] = report["data"][op_name].get(plan_name, 0) + 1
 
+        # Reply ပြန်ပြီး Message ID ကို သိမ်းဆည်းခြင်း (Edit လုပ်လျှင် လိုက်ပြင်နိုင်ရန်)
         sent_msg = await update.message.reply_text(text=reply_text, parse_mode="Markdown", disable_web_page_preview=True)
         if "msg_map" not in context.user_data:
             context.user_data["msg_map"] = {}
@@ -184,13 +178,20 @@ async def clear_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Command Handlers 
     application.add_handler(CommandHandler("report", get_report))
     application.add_handler(CommandHandler("clear", clear_report))
+    
+    # Message Handlers (စာသားနှင့် ဓာတ်ပုံစာသားများပါ အလုပ်လုပ်မည်)
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler((filters.UpdateType.EDITED_MESSAGE) & (filters.TEXT | filters.PHOTO), handle_edited_message))
+    
+    # Flask Web Server ကို Thread တစ်ခုဖြင့် နောက်ကွယ်တွင် ပတ်ထားခြင်း (Render/Koyeb တို့တွင် Bot မသေစေရန်)
     server_thread = Thread(target=run_web_server)
     server_thread.daemon = True
     server_thread.start()
+    
     print("Bot is polling successfully...")
     application.run_polling()
 

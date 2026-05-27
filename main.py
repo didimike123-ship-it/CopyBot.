@@ -40,26 +40,28 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-def calculate_expression(text):
-    text = text.strip().replace(' ', '')
-    if not re.match(r'^[\d+\-*/().%]+$', text):
+def extract_and_calculate(text):
+    clean_expr = re.sub(r'[^0-9+\-*/().%]', '', text)
+    if not clean_expr or not any(c.isdigit() for c in clean_expr):
         return None
         
+    if not any(op in clean_expr for op in ['+', '-', '*', '/', '%']):
+        return None
+
     try:
-        pct_match = re.search(r'(\d+)([+\-])(\d+)%', text)
+        pct_match = re.search(r'(\d+(?:\.\d+)?)([+\-])(\d+(?:\.\d+)?)%', clean_expr)
         if pct_match:
             base = float(pct_match.group(1))
             op = pct_match.group(2)
             pct = float(pct_match.group(3))
             val = base * (pct / 100.0)
-            if op == '+':
-                res = base + val
-            else:
-                res = base - val
+            res = base + val if op == '+' else base - val
             return int(res) if res.is_integer() else round(res, 2)
-            
-        safe_text = text.replace('%', '/100')
-        res = eval(safe_text, {"__builtins__": None}, {})
+
+        if '%' in clean_expr and not pct_match:
+            clean_expr = clean_expr.replace('%', '/100')
+
+        res = eval(clean_expr, {"__builtins__": None}, {})
         if isinstance(res, (int, float)):
             return int(res) if getattr(res, 'is_integer', lambda: False)() else round(res, 2)
     except:
@@ -112,15 +114,15 @@ def process_phone_logic(original_text):
         standard_num = "09" + base_num
         op_name = ""
 
-        if standard_num.startswith(('096', '0975', '0976', '0977', '0978', '0979')):
-            final_copy_text = standard_num
-            op_name = "MYTEL"
-            
-        elif standard_num.startswith(('0974', '0973', '0972', '091', '0925')):
+        if standard_num.startswith('097'):
             final_copy_text = standard_num[1:]
             op_name = "ATOM"
             
-        elif standard_num.startswith(('092', '094', '095', '0971', '098')):
+        elif standard_num.startswith('096'):
+            final_copy_text = standard_num
+            op_name = "MYTEL"
+            
+        elif standard_num.startswith(('092', '094', '095')):
             formatted_num = base_num
             final_copy_text = f"{formatted_num} {clean_text}" if clean_text else formatted_num
             op_name = "MPT"
@@ -144,11 +146,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     incoming_text = update.message.text if update.message.text else update.message.caption
     if not incoming_text:
-        return
-
-    calc_res = calculate_expression(incoming_text)
-    if calc_res is not None:
-        await update.message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
         return
 
     reply_text, op_name, plan_name = process_phone_logic(incoming_text)
@@ -177,6 +174,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "msg_map" not in context.user_data:
             context.user_data["msg_map"] = {}
         context.user_data["msg_map"][update.message.message_id] = sent_msg.message_id
+        return
+
+    calc_res = extract_and_calculate(incoming_text)
+    if calc_res is not None:
+        await update.message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
+        return
 
 async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.edited_message:
@@ -187,42 +190,41 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     if not edited_text:
         return
 
-    calc_res = calculate_expression(edited_text)
-    if calc_res is not None:
-        await update.edited_message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
-        return
-
     new_reply_text, _, _ = process_phone_logic(edited_text)
-    if not new_reply_text:
-        return
+    if new_reply_text:
+        msg_map = context.user_data.get("msg_map", {})
+        bot_msg_id = msg_map.get(user_msg_id)
 
-    msg_map = context.user_data.get("msg_map", {})
-    bot_msg_id = msg_map.get(user_msg_id)
-
-    if bot_msg_id:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=update.edited_message.chat_id,
-                message_id=bot_msg_id,
-                text=new_reply_text,
-                parse_mode="Markdown",
-                disable_web_page_preview=True
-            )
-        except Exception:
-            await update.edited_message.reply_text(
+        if bot_msg_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=update.edited_message.chat_id,
+                    message_id=bot_msg_id,
+                    text=new_reply_text,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
+            except Exception:
+                await update.edited_message.reply_text(
+                    text=new_reply_text, 
+                    parse_mode="Markdown", 
+                    disable_web_page_preview=True
+                )
+        else:
+            sent_msg = await update.edited_message.reply_text(
                 text=new_reply_text, 
                 parse_mode="Markdown", 
                 disable_web_page_preview=True
             )
-    else:
-        sent_msg = await update.edited_message.reply_text(
-            text=new_reply_text, 
-            parse_mode="Markdown", 
-            disable_web_page_preview=True
-        )
-        if "msg_map" not in context.user_data:
-            context.user_data["msg_map"] = {}
-        context.user_data["msg_map"][user_msg_id] = sent_msg.message_id
+            if "msg_map" not in context.user_data:
+                context.user_data["msg_map"] = {}
+            context.user_data["msg_map"][user_msg_id] = sent_msg.message_id
+        return
+
+    calc_res = extract_and_calculate(edited_text)
+    if calc_res is not None:
+        await update.edited_message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
+        return
 
 async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -236,8 +238,20 @@ async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report_msg += f"📅 Date: {report['date']}\n\n"
     
     total_all = 0
-    for op, plans in report["data"].items():
-        report_msg += f"🔹 *{op}*\n"
+    for op in ["ATOM", "MYTEL", "OOREDOO", "MPT"]:
+        if op in report["data"]:
+            plans = report["data"][op]
+            report_msg += f"🔹 *{op}*\n"
+            op_total = 0
+            for plan, count in plans.items():
+                report_msg += f"  ▫️ {plan} : {count} ကြိမ်\n"
+                op_total += count
+            report_msg += f"  🔻 Subtotal: {op_total} ကြိမ်\n\n"
+            total_all += op_total
+            
+    if "UNKNOWN" in report["data"]:
+        plans = report["data"]["UNKNOWN"]
+        report_msg += f"🔹 *UNKNOWN*\n"
         op_total = 0
         for plan, count in plans.items():
             report_msg += f"  ▫️ {plan} : {count} ကြိမ်\n"

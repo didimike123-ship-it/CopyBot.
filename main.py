@@ -73,7 +73,7 @@ def process_phone_logic(original_text):
     if not original_text or is_pure_calculation(original_text):
         return None, None, None
 
-    phone_match = re.search(r'(\+?95\s*9|\b0?9)\s*([0-9\s]{7,11})', original_text)
+    phone_match = re.search(r'(\+?95\s*9|\b0?9)\s*([0-9\s]{7,13})', original_text)
     if not phone_match:
         return None, None, None
 
@@ -89,7 +89,7 @@ def process_phone_logic(original_text):
     else:
         base_num = digits_only
 
-    if not (7 <= len(base_num) <= 9):
+    if not (7 <= len(base_num) <= 11):
         return None, None, None
 
     standard_num = "09" + base_num

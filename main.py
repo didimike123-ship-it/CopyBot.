@@ -10,10 +10,10 @@ BOT_TOKEN = "8984373560:AAEApSz6JqW5toSTC8fHfQhbP13_7cJNlvY"
 
 app = Flask(__name__)
 
-# ဒေတာသိမ်းဆည်းမည့် နေရာများ (Global Dicts)
+# Global Dicts - စိတ်ချရအောင် Global အနေနဲ့ အထိုင်ချထားသည်
 group_sales_reports = {}
-msg_records = {}   # Message ID အလိုက် ဘာစာရင်းသွင်းထားလဲ မှတ်ရန်
-bot_msg_map = {}   # User Message ID နှင့် Bot Message ID ချိတ်ဆက်မှု မှတ်ရန်
+msg_records = {}   # User Message ID -> {"op_name", "plan_name", "chat_id"}
+bot_msg_map = {}   # User Message ID -> Bot Message ID
 
 OPERATOR_PLANS = {
     "MYTEL": ["o15k plan", "o20k plan", "n15k plan", "n20k plan", "n25k plan", "n30k plan", "1gb", "1.6gb", "3gb", "5gb", "10gb", "on90", "on180", "on69", "on138", "any13", "any41", "any114"],
@@ -43,7 +43,7 @@ def process_phone_logic(original_text):
     if not original_text:
         return None, None, None
 
-    # Space ပါပါ မပါပါ ဖမ်းယူပေးမည့် စနစ်
+    # ဖုန်းနံပါတ် Pattern အား Space ပါပါ မပါပါ ရှာဖွေခြင်း
     pattern = r'(?:\+?95[\s*]*9|0[\s*]*9)[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d?'
     match = re.search(pattern, original_text)
     if not match:
@@ -65,7 +65,7 @@ def process_phone_logic(original_text):
         final_copy_text = phone_digits[1:]
         op_name = "ATOM"
     elif phone_digits.startswith('096') and (len(phone_digits) == 10 or len(phone_digits) == 11):
-        final_copy_text = phone_digits
+        final_copy_text = phone_digits  # MYTEL ဆိုလျှင် နံပါတ်အတိုင်း ပြန်ပြမည်
         op_name = "MYTEL"
     elif phone_digits.startswith(('092', '094', '098')) and len(phone_digits) == 11:
         base_part = phone_digits[2:]
@@ -113,7 +113,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         sent_msg = await update.message.reply_text(text=reply_text, parse_mode="Markdown", disable_web_page_preview=True)
         
-        # User Message ID နှင့် Bot Reply ID ချိတ်ဆက်မှုကို Global Map ထဲ သိမ်းသည်
+        # User Message ID နှင့် Bot Reply ID ချိတ်ဆက်မှုကို တိုက်ရိုက်သိမ်းသည်
         bot_msg_map[user_msg_id] = sent_msg.message_id
         return
 
@@ -155,19 +155,28 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
         report["data"][new_op][new_plan] = report["data"][new_op].get(new_plan, 0) + 1
         msg_records[user_msg_id] = {"op_name": new_op, "plan_name": new_plan, "chat_id": chat_id}
 
-        # ၃။ Bot စာသားဟောင်းကို အမှန်အတိုင်း တိုက်ရိုက် Edit ပြောင်းလဲခြင်း
+        # ၃။ Telegram ပေါ်ရှိ Bot Message စာသားဟောင်းကို Edit ပြုလုပ်ခြင်း
         bot_msg_id = bot_msg_map.get(user_msg_id)
 
         if bot_msg_id:
             try:
-                # အရင်ပို့ထားတဲ့ Bot Message ကို စာသားအသစ်နဲ့ ပြန်ပြင်ခိုင်းတာဖြစ်ပါတယ်
-                await context.bot.edit_message_text(chat_id=chat_id, message_id=bot_msg_id, text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
+                # အရင်ပို့ထားဖူးသော Bot message အား စာသားအသစ်ဖြင့် တိုက်ရိုက် Edit ခိုင်းခြင်း
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, 
+                    message_id=bot_msg_id, 
+                    text=new_reply_text, 
+                    parse_mode="Markdown", 
+                    disable_web_page_preview=True
+                )
+                print(f"[SUCCESS] Edited Bot Message for User Msg ID: {user_msg_id}")
             except Exception as e:
-                # တစ်ခုခုကြောင့် ပြင်မရရင် Reply အသစ်ပြန်ပို့ပေးမည်
+                # ပြင်မရပါက နောက်ဆက်တွဲအနေဖြင့် Reply အသစ် ထပ်ပို့ပေးမည်
+                print(f"[ERROR] Could not edit message: {e}")
                 sent_msg = await update.edited_message.reply_text(text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
                 bot_msg_map[user_msg_id] = sent_msg.message_id
         else:
-            # Map ထဲမှာ ရှာမတွေ့ခဲ့ရင် Reply အသစ်ပြန်ပို့ပေးမည်
+            # Map ထဲတွင် ရှာမတွေ့ပါက Reply အသစ် ထပ်ပို့ပေးမည်
+            print(f"[INFO] Bot message ID not found in map for User Msg ID: {user_msg_id}. Sending new reply.")
             sent_msg = await update.edited_message.reply_text(text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
             bot_msg_map[user_msg_id] = sent_msg.message_id
         return

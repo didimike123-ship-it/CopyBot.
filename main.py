@@ -10,10 +10,11 @@ BOT_TOKEN = "8984373560:AAEApSz6JqW5toSTC8fHfQhbP13_7cJNlvY"
 
 app = Flask(__name__)
 
-# တစ်ရက်တာ အရောင်းစာရင်းများကို သိမ်းဆည်းရန် Data Structure
+# ဒေတာသိမ်းဆည်းမည့် နေရာများ (Global Dicts)
 group_sales_reports = {}
+msg_records = {}   # Message ID အလိုက် ဘာစာရင်းသွင်းထားလဲ မှတ်ရန်
+bot_msg_map = {}   # User Message ID နှင့် Bot Message ID ချိတ်ဆက်မှု မှတ်ရန်
 
-# အော်ပရေတာအလိုက် ပလန်အမည်များ
 OPERATOR_PLANS = {
     "MYTEL": ["o15k plan", "o20k plan", "n15k plan", "n20k plan", "n25k plan", "n30k plan", "1gb", "1.6gb", "3gb", "5gb", "10gb", "on90", "on180", "on69", "on138", "any13", "any41", "any114"],
     "ATOM": ["15k plan", "25k plan", "870(3d)", "1gb(3d)", "1gb(1m)", "point(p)500", "any 150", "any 100", "on 150"],
@@ -42,42 +43,36 @@ def process_phone_logic(original_text):
     if not original_text:
         return None, None, None
 
-    # ဒုတိယကုဒ်မှ ပိုမိုကောင်းမွန်သော ဖုန်းနံပါတ်ရှာဖွေသည့် စနစ်ကို အသုံးပြုထားသည် (Space ခြားနေသည်များကိုပါ ရှာပေးနိုင်သည်)
-    # +959 သို့မဟုတ် 09 နဲ့စပြီး နောက်မှာ space ပါပါ မပါပါ ဂဏန်းတွေကို ဖမ်းယူမည်
+    # Space ပါပါ မပါပါ ဖမ်းယူပေးမည့် စနစ်
     pattern = r'(?:\+?95[\s*]*9|0[\s*]*9)[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d?'
     match = re.search(pattern, original_text)
     if not match:
         return None, None, None
 
     exact_phone_raw = match.group(0)
-    
-    # ဂဏန်းများ သီးသန့်ထုတ်ယူခြင်း
     phone_digits = "".join(re.findall(r'\d+', exact_phone_raw))
     
-    # 959 ကို 09 သို့ ပြောင်းလဲခြင်း
     if phone_digits.startswith('959'):
         phone_digits = "09" + phone_digits[3:]
 
-    # စာသားထဲမှ ဖုန်းနံပါတ်ပါသောအပိုင်းကို ဖယ်ထုတ်ပြီး ကျန်ရှိသော စာသားကို သန့်စင်ခြင်း
     clean_text = original_text.replace(exact_phone_raw, ' ', 1).strip()
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
     final_copy_text = ""
     op_name = ""
 
-    # အော်ပရေတာ ခွဲခြားခြင်းနှင့် Format ပြောင်းလဲခြင်း
     if phone_digits.startswith('097') and len(phone_digits) == 11:
-        final_copy_text = phone_digits[1:]  # ရှေ့ဆုံးက 0 ဖြုတ်ပြီး 97... ပြန်ပြောင်းမည်
+        final_copy_text = phone_digits[1:]
         op_name = "ATOM"
     elif phone_digits.startswith('096') and (len(phone_digits) == 10 or len(phone_digits) == 11):
-        final_copy_text = phone_digits      # 096... အတိုင်းထားမည်
+        final_copy_text = phone_digits
         op_name = "MYTEL"
     elif phone_digits.startswith(('092', '094', '098')) and len(phone_digits) == 11:
-        base_part = phone_digits[2:]        # ရှေ့က 09 ဖြုတ်ပြီး 2... / 4... / 8... ပြောင်းမည်
+        base_part = phone_digits[2:]
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "MPT"
     elif phone_digits.startswith('099') and len(phone_digits) == 11:
-        base_part = phone_digits[1:]        # ရှေ့က 0 ဖြုတ်ပြီး 99... ပြောင်းမည်
+        base_part = phone_digits[1:]
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "OOREDOO"
     else:
@@ -97,9 +92,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_text, op_name, plan_name = process_phone_logic(incoming_text)
     if reply_text:
         chat_id = update.message.chat_id
+        user_msg_id = update.message.message_id
         current_date = datetime.now().strftime("%Y-%m-%d")
 
-        # ရက်စွဲအလိုက် စာရင်းဇယား တည်ဆောက်ခြင်း
         if chat_id not in group_sales_reports:
             group_sales_reports[chat_id] = {"date": current_date, "data": {}}
 
@@ -112,12 +107,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report["data"][op_name] = {}
             
         report["data"][op_name][plan_name] = report["data"][op_name].get(plan_name, 0) + 1
+        
+        # စာရင်းမှတ်တမ်း သိမ်းဆည်းခြင်း
+        msg_records[user_msg_id] = {"op_name": op_name, "plan_name": plan_name, "chat_id": chat_id}
 
-        # Reply ပြန်ပြီး Message ID ကို သိမ်းဆည်းခြင်း (Edit လုပ်လျှင် လိုက်ပြင်နိုင်ရန်)
         sent_msg = await update.message.reply_text(text=reply_text, parse_mode="Markdown", disable_web_page_preview=True)
-        if "msg_map" not in context.user_data:
-            context.user_data["msg_map"] = {}
-        context.user_data["msg_map"][update.message.message_id] = sent_msg.message_id
+        
+        # User Message ID နှင့် Bot Reply ID ချိတ်ဆက်မှုကို Global Map ထဲ သိမ်းသည်
+        bot_msg_map[user_msg_id] = sent_msg.message_id
         return
 
 async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,25 +122,54 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     user_msg_id = update.edited_message.message_id
+    chat_id = update.edited_message.chat_id
     edited_text = update.edited_message.text if update.edited_message.text else update.edited_message.caption
     if not edited_text:
         return
 
-    new_reply_text, _, _ = process_phone_logic(edited_text)
+    new_reply_text, new_op, new_plan = process_phone_logic(edited_text)
     if new_reply_text:
-        msg_map = context.user_data.get("msg_map", {})
-        bot_msg_id = msg_map.get(user_msg_id)
+        
+        # ၁။ စာရင်းဟောင်းကို ပြန်နှုတ်ခြင်း
+        if user_msg_id in msg_records:
+            old_record = msg_records[user_msg_id]
+            old_op = old_record["op_name"]
+            old_plan = old_record["plan_name"]
+            old_chat_id = old_record["chat_id"]
+            
+            if old_chat_id in group_sales_reports and old_op in group_sales_reports[old_chat_id]["data"]:
+                if old_plan in group_sales_reports[old_chat_id]["data"][old_op]:
+                    group_sales_reports[old_chat_id]["data"][old_op][old_plan] -= 1
+                    if group_sales_reports[old_chat_id]["data"][old_op][old_plan] <= 0:
+                        del group_sales_reports[old_chat_id]["data"][old_op][old_plan]
+
+        # ၂။ စာရင်းအသစ်ကို ပြန်ပေါင်းထည့်ခြင်း
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        if chat_id not in group_sales_reports:
+            group_sales_reports[chat_id] = {"date": current_date, "data": {}}
+        
+        report = group_sales_reports[chat_id]
+        if new_op not in report["data"]:
+            report["data"][new_op] = {}
+        
+        report["data"][new_op][new_plan] = report["data"][new_op].get(new_plan, 0) + 1
+        msg_records[user_msg_id] = {"op_name": new_op, "plan_name": new_plan, "chat_id": chat_id}
+
+        # ၃။ Bot စာသားဟောင်းကို အမှန်အတိုင်း တိုက်ရိုက် Edit ပြောင်းလဲခြင်း
+        bot_msg_id = bot_msg_map.get(user_msg_id)
 
         if bot_msg_id:
             try:
-                await context.bot.edit_message_text(chat_id=update.edited_message.chat_id, message_id=bot_msg_id, text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
-            except Exception:
-                await update.edited_message.reply_text(text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
+                # အရင်ပို့ထားတဲ့ Bot Message ကို စာသားအသစ်နဲ့ ပြန်ပြင်ခိုင်းတာဖြစ်ပါတယ်
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=bot_msg_id, text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
+            except Exception as e:
+                # တစ်ခုခုကြောင့် ပြင်မရရင် Reply အသစ်ပြန်ပို့ပေးမည်
+                sent_msg = await update.edited_message.reply_text(text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
+                bot_msg_map[user_msg_id] = sent_msg.message_id
         else:
+            # Map ထဲမှာ ရှာမတွေ့ခဲ့ရင် Reply အသစ်ပြန်ပို့ပေးမည်
             sent_msg = await update.edited_message.reply_text(text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
-            if "msg_map" not in context.user_data:
-                context.user_data["msg_map"] = {}
-            context.user_data["msg_map"][user_msg_id] = sent_msg.message_id
+            bot_msg_map[user_msg_id] = sent_msg.message_id
         return
 
 async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,15 +205,12 @@ async def clear_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Command Handlers 
     application.add_handler(CommandHandler("report", get_report))
     application.add_handler(CommandHandler("clear", clear_report))
     
-    # Message Handlers (စာသားနှင့် ဓာတ်ပုံစာသားများပါ အလုပ်လုပ်မည်)
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler((filters.UpdateType.EDITED_MESSAGE) & (filters.TEXT | filters.PHOTO), handle_edited_message))
     
-    # Flask Web Server ကို Thread တစ်ခုဖြင့် နောက်ကွယ်တွင် ပတ်ထားခြင်း (Render/Koyeb တို့တွင် Bot မသေစေရန်)
     server_thread = Thread(target=run_web_server)
     server_thread.daemon = True
     server_thread.start()

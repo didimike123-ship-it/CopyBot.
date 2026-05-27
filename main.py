@@ -106,11 +106,11 @@ def process_phone_logic(original_text):
     elif standard_num.startswith('096'):
         final_copy_text = standard_num
         op_name = "MYTEL"
-    elif standard_num.startswith(('092', '094', '095')):
+    elif standard_num.startswith(('092', '094', '098')):
         final_copy_text = f"{base_num} {clean_text}" if clean_text else base_num
         op_name = "MPT"
     elif standard_num.startswith('099'):
-        final_copy_text = f"{standard_num} {clean_text}" if clean_text else standard_num
+        final_copy_text = f"{standard_num[1:]} {clean_text}" if clean_text else standard_num[1:]
         op_name = "OOREDOO"
     else:
         final_copy_text = standard_num
@@ -220,8 +220,7 @@ async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report_msg += f"  🔻 Subtotal: {op_total} ကြိမ်\n\n"
         total_all += op_total
         
-    report_msg += f"---------------------------\n"
-    report_msg += f"📈 *Group Total Sales: {total_all} ကြိမ်*"
+    report_msg += f"---------------------------\n📈 *Group Total Sales: {total_all} ကြိမ်*"
     await update.message.reply_text(text=report_msg, parse_mode="Markdown")
 
 async def clear_report(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -1,13 +1,36 @@
 import os
 import re
+from datetime import datetime
 from threading import Thread
 from flask import Flask
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 BOT_TOKEN = "8984373560:AAEApSz6JqW5toSTC8fHfQhbP13_7cJNlvY"
 
 app = Flask(__name__)
+
+group_sales_reports = {}
+
+OPERATOR_PLANS = {
+    "MYTEL": [
+        "o15k plan", "o20k plan", "n15k plan", "n20k plan", "n25k plan", "n30k plan",
+        "1gb", "1.6gb", "3gb", "5gb", "10gb", "on90", "on180", "on69", "on138",
+        "any13", "any41", "any114"
+    ],
+    "ATOM": [
+        "15k plan", "25k plan", "870(3d)", "1gb(3d)", "1gb(1m)", "point(p)500",
+        "any 150", "any 100", "on 150"
+    ],
+    "OOREDOO": [
+        "1gb", "830mb", "15k plan", "20k plan", "25k plan", "30k plan",
+        "any 45", "any 91", "onnet 69"
+    ],
+    "MPT": [
+        "15k plan", "25k plan", "415mb", "870mb", "1735mb", "any 40", "any 85",
+        "any 50", "on 60", "on 76", "on 130", "on270"
+    ]
+}
 
 @app.route('/')
 def home():
@@ -17,11 +40,48 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
+def calculate_expression(text):
+    text = text.strip().replace(' ', '')
+    if not re.match(r'^[\d+\-*/().%]+$', text):
+        return None
+        
+    try:
+        pct_match = re.search(r'(\d+)([+\-])(\d+)%', text)
+        if pct_match:
+            base = float(pct_match.group(1))
+            op = pct_match.group(2)
+            pct = float(pct_match.group(3))
+            val = base * (pct / 100.0)
+            if op == '+':
+                res = base + val
+            else:
+                res = base - val
+            return int(res) if res.is_integer() else round(res, 2)
+            
+        safe_text = text.replace('%', '/100')
+        res = eval(safe_text, {"__builtins__": None}, {})
+        if isinstance(res, (int, float)):
+            return int(res) if getattr(res, 'is_integer', lambda: False)() else round(res, 2)
+    except:
+        pass
+    return None
+
+def match_exact_plan(op_name, clean_text):
+    if op_name not in OPERATOR_PLANS:
+        return "Unknown Plan"
+    
+    text_lower = clean_text.lower()
+    for plan in OPERATOR_PLANS[op_name]:
+        if plan in text_lower:
+            return plan.upper()
+            
+    return clean_text if clean_text else "General Data"
+
 def process_phone_logic(original_text):
     if not original_text:
-        return None
+        return None, None, None
 
-    clean_original = re.sub(r'[^a-zA-Z0-9\u1000-\u109f\s]', ' ', original_text)
+    clean_original = re.sub(r'[^a-zA-Z0-9\u1000-\u109f\s()+-]', ' ', original_text)
     clean_original = re.sub(r'\s+', ' ', clean_original).strip()
 
     all_digits = "".join(re.findall(r'\d+', clean_original))
@@ -40,37 +100,43 @@ def process_phone_logic(original_text):
             base_num = raw_num
 
         if not (7 <= len(base_num) <= 9):
-            return None
+            return None, None, None
 
         spaced_digits_pattern = r'\s*'.join(list(raw_num))
         text_parts = re.sub(spaced_digits_pattern, '', clean_original, count=1)
         text_parts = re.sub(r'\+?959|09', '', text_parts, count=1)
         
-        clean_text = re.sub(r'[^a-zA-Z0-9\u1000-\u109f\s]', '', text_parts)
-        clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+        clean_text = re.sub(r'\s+', ' ', text_parts).strip()
 
         final_copy_text = ""
         standard_num = "09" + base_num
+        op_name = ""
 
         if standard_num.startswith(('096', '0975', '0976', '0977', '0978', '0979')):
             final_copy_text = standard_num
+            op_name = "MYTEL"
             
         elif standard_num.startswith(('0974', '0973', '0972', '091', '0925')):
             final_copy_text = standard_num[1:]
+            op_name = "ATOM"
             
         elif standard_num.startswith(('092', '094', '095', '0971', '098')):
             formatted_num = base_num
             final_copy_text = f"{formatted_num} {clean_text}" if clean_text else formatted_num
+            op_name = "MPT"
             
         elif standard_num.startswith('099'):
             formatted_num = standard_num
             final_copy_text = f"{formatted_num} {clean_text}" if clean_text else formatted_num
+            op_name = "OOREDOO"
             
         else:
             final_copy_text = standard_num
+            op_name = "UNKNOWN"
 
-        return f"`{final_copy_text}`"
-    return None
+        matched_plan = match_exact_plan(op_name, clean_text)
+        return f"`{final_copy_text}`", op_name, matched_plan
+    return None, None, None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -80,8 +146,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not incoming_text:
         return
 
-    reply_text = process_phone_logic(incoming_text)
+    calc_res = calculate_expression(incoming_text)
+    if calc_res is not None:
+        await update.message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
+        return
+
+    reply_text, op_name, plan_name = process_phone_logic(incoming_text)
     if reply_text:
+        chat_id = update.message.chat_id
+        current_date = datetime.now().strftime("%Y-%m-%d")
+
+        if chat_id not in group_sales_reports:
+            group_sales_reports[chat_id] = {"date": current_date, "data": {}}
+
+        report = group_sales_reports[chat_id]
+        if report["date"] != current_date:
+            report["date"] = current_date
+            report["data"] = {}
+
+        if op_name not in report["data"]:
+            report["data"][op_name] = {}
+            
+        report["data"][op_name][plan_name] = report["data"][op_name].get(plan_name, 0) + 1
+
         sent_msg = await update.message.reply_text(
             text=reply_text, 
             parse_mode="Markdown", 
@@ -100,7 +187,12 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     if not edited_text:
         return
 
-    new_reply_text = process_phone_logic(edited_text)
+    calc_res = calculate_expression(edited_text)
+    if calc_res is not None:
+        await update.edited_message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
+        return
+
+    new_reply_text, _, _ = process_phone_logic(edited_text)
     if not new_reply_text:
         return
 
@@ -132,8 +224,43 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
             context.user_data["msg_map"] = {}
         context.user_data["msg_map"][user_msg_id] = sent_msg.message_id
 
+async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    report = group_sales_reports.get(chat_id)
+
+    if not report or not report["data"]:
+        await update.message.reply_text(text="📊 ယနေ့အတွက် ဤ Group တွင် ရောင်းချထားသော စာရင်းမရှိသေးပါခင်ဗျာ။")
+        return
+
+    report_msg = f"📊 *Group Sales Report*\n"
+    report_msg += f"📅 Date: {report['date']}\n\n"
+    
+    total_all = 0
+    for op, plans in report["data"].items():
+        report_msg += f"🔹 *{op}*\n"
+        op_total = 0
+        for plan, count in plans.items():
+            report_msg += f"  ▫️ {plan} : {count} ကြိမ်\n"
+            op_total += count
+        report_msg += f"  🔻 Subtotal: {op_total} ကြိမ်\n\n"
+        total_all += op_total
+        
+    report_msg += f"---------------------------\n"
+    report_msg += f"📈 *Group Total Sales: {total_all} ကြိမ်*"
+    
+    await update.message.reply_text(text=report_msg, parse_mode="Markdown")
+
+async def clear_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    if chat_id in group_sales_reports:
+        group_sales_reports[chat_id]["data"] = {}
+    await update.message.reply_text(text="✅ ဤ Group အတွက် တစ်နေ့တာ စာရင်းများကို 0 သို့ ပြန်ပြင်ဆင်ပြီးပါပြီ။")
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    application.add_handler(CommandHandler("report", get_report))
+    application.add_handler(CommandHandler("clear", clear_report))
     
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler((filters.UpdateType.EDITED_MESSAGE) & (filters.TEXT | filters.PHOTO), handle_edited_message))

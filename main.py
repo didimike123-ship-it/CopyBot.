@@ -73,65 +73,44 @@ def process_phone_logic(original_text):
     if not original_text or is_pure_calculation(original_text):
         return None, None, None
 
-    text_upper = original_text.upper()
+    normalized = re.sub(r'\+?95\s*9', '09', original_text)
     
-    match_prefix = re.search(r'(\+?95\s*9\s*[246789]|\b0\s*9\s*[246789])', text_upper)
-    if not match_prefix:
-        return None, None, None
-        
-    start_idx = match_prefix.start()
-    subset = text_upper[start_idx:]
-    
-    digits_list = []
-    chars_seen = 0
-    
-    for char in subset:
-        if char.isdigit():
-            digits_list.append(char)
-            chars_seen += 1
-        elif char.isspace() or char == '+':
-            if len(digits_list) > 0:
-                pass
-        else:
-            break
-            
-    raw_num_extracted = subset[:chars_seen + len(re.findall(r'[\s+]', subset[:chars_seen+4]))]
-    phone_digits = "".join(re.findall(r'\d+', raw_num_extracted))
-    
-    if phone_digits.startswith('959'):
-        full_num = "09" + phone_digits[3:]
-    elif phone_digits.startswith('09'):
-        full_num = phone_digits
-    elif phone_digits.startswith('9'):
-        full_num = "09" + phone_digits[1:]
-    else:
-        full_num = "09" + phone_digits
-
-    if len(full_num) < 9:
+    phone_pattern = r'(09\s*\d(?:\s*\d){6,9})'
+    match = re.search(phone_pattern, normalized)
+    if not match:
         return None, None, None
 
-    clean_text = original_text.replace(original_text[start_idx:][:len(raw_num_extracted)], ' ').strip()
+    raw_phone_part = match.group(1)
+    phone_digits = "".join(raw_phone_part.split())
+
+    if not (9 <= len(phone_digits) <= 12):
+        return None, None, None
+
+    original_clean_pattern = "".join([f"\\s*{c}" if c.isdigit() else "\\s*" for c in phone_digits])
+    original_clean_pattern = r'(\+?95\s*9|0\s*9)' + original_clean_pattern[4:]
+    
+    clean_text = re.sub(original_clean_pattern, ' ', original_text, count=1).strip()
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
     final_copy_text = ""
     op_name = ""
 
-    if full_num.startswith('097'):
-        final_copy_text = full_num[1:]
+    if phone_digits.startswith('097'):
+        final_copy_text = phone_digits[1:]
         op_name = "ATOM"
-    elif full_num.startswith('096'):
-        final_copy_text = full_num
+    elif phone_digits.startswith('096'):
+        final_copy_text = phone_digits
         op_name = "MYTEL"
-    elif full_num.startswith(('092', '094', '098')):
-        base_part = full_num[2:]
+    elif phone_digits.startswith(('092', '094', '098')):
+        base_part = phone_digits[2:]
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "MPT"
-    elif full_num.startswith('099'):
-        base_part = full_num[1:]
+    elif phone_digits.startswith('099'):
+        base_part = phone_digits[1:]
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "OOREDOO"
     else:
-        final_copy_text = full_num
+        final_copy_text = phone_digits
         op_name = "UNKNOWN"
 
     matched_plan = match_exact_plan(op_name, clean_text)

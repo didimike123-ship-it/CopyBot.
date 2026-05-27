@@ -73,9 +73,6 @@ def process_phone_logic(original_text):
     if not original_text or is_pure_calculation(original_text):
         return None, None, None
 
-    clean_original = re.sub(r'[^a-zA-Z0-9\u1000-\u109f\s()+-]', ' ', original_text)
-    clean_original = re.sub(r'\s+', ' ', clean_original).strip()
-
     phone_match = re.search(r'(\+?95\s*9|\b0?9)\s*([0-9\s]{7,11})', original_text)
     if not phone_match:
         return None, None, None
@@ -96,7 +93,8 @@ def process_phone_logic(original_text):
         return None, None, None
 
     standard_num = "09" + base_num
-    clean_text = original_text.replace(raw_num, '').strip()
+    
+    clean_text = original_text.replace(raw_num, ' ').strip()
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
     final_copy_text = ""
@@ -129,12 +127,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not incoming_text:
         return
 
-    if is_pure_calculation(incoming_text):
-        calc_res = extract_and_calculate(incoming_text)
-        if calc_res is not None:
-            await update.message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
-            return
-
     reply_text, op_name, plan_name = process_phone_logic(incoming_text)
     if reply_text:
         chat_id = update.message.chat_id
@@ -159,6 +151,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["msg_map"][update.message.message_id] = sent_msg.message_id
         return
 
+    if is_pure_calculation(incoming_text):
+        calc_res = extract_and_calculate(incoming_text)
+        if calc_res is not None:
+            await update.message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
+            return
+
 async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.edited_message:
         return
@@ -167,12 +165,6 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     edited_text = update.edited_message.text if update.edited_message.text else update.edited_message.caption
     if not edited_text:
         return
-
-    if is_pure_calculation(edited_text):
-        calc_res = extract_and_calculate(edited_text)
-        if calc_res is not None:
-            await update.edited_message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
-            return
 
     new_reply_text, _, _ = process_phone_logic(edited_text)
     if new_reply_text:
@@ -190,6 +182,12 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
                 context.user_data["msg_map"] = {}
             context.user_data["msg_map"][user_msg_id] = sent_msg.message_id
         return
+
+    if is_pure_calculation(edited_text):
+        calc_res = extract_and_calculate(edited_text)
+        if calc_res is not None:
+            await update.edited_message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
+            return
 
 async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -222,7 +220,8 @@ async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report_msg += f"  🔻 Subtotal: {op_total} ကြိမ်\n\n"
         total_all += op_total
         
-    report_msg += f"---------------------------\n📈 *Group Total Sales: {total_all} ကြိမ်*"
+    report_msg += f"---------------------------\n"
+    report_msg += f"📈 *Group Total Sales: {total_all} ကြိမ်*"
     await update.message.reply_text(text=report_msg, parse_mode="Markdown")
 
 async def clear_report(update: Update, context: ContextTypes.DEFAULT_TYPE):

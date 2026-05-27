@@ -73,47 +73,65 @@ def process_phone_logic(original_text):
     if not original_text or is_pure_calculation(original_text):
         return None, None, None
 
-    phone_match = re.search(r'(\+?95\s*9|\b0?9)\s*([0-9\s]{7,13})', original_text)
-    if not phone_match:
-        return None, None, None
-
-    raw_num = phone_match.group(0)
-    digits_only = "".join(re.findall(r'\d+', raw_num))
-
-    if digits_only.startswith('959'):
-        base_num = digits_only[3:]
-    elif digits_only.startswith('09'):
-        base_num = digits_only[2:]
-    elif digits_only.startswith('9'):
-        base_num = digits_only[1:]
-    else:
-        base_num = digits_only
-
-    if not (7 <= len(base_num) <= 11):
-        return None, None, None
-
-    standard_num = "09" + base_num
+    text_upper = original_text.upper()
     
-    clean_text = original_text.replace(raw_num, ' ').strip()
+    match_prefix = re.search(r'(\+?95\s*9\s*[246789]|\b0\s*9\s*[246789])', text_upper)
+    if not match_prefix:
+        return None, None, None
+        
+    start_idx = match_prefix.start()
+    subset = text_upper[start_idx:]
+    
+    digits_list = []
+    chars_seen = 0
+    
+    for char in subset:
+        if char.isdigit():
+            digits_list.append(char)
+            chars_seen += 1
+        elif char.isspace() or char == '+':
+            if len(digits_list) > 0:
+                pass
+        else:
+            break
+            
+    raw_num_extracted = subset[:chars_seen + len(re.findall(r'[\s+]', subset[:chars_seen+4]))]
+    phone_digits = "".join(re.findall(r'\d+', raw_num_extracted))
+    
+    if phone_digits.startswith('959'):
+        full_num = "09" + phone_digits[3:]
+    elif phone_digits.startswith('09'):
+        full_num = phone_digits
+    elif phone_digits.startswith('9'):
+        full_num = "09" + phone_digits[1:]
+    else:
+        full_num = "09" + phone_digits
+
+    if len(full_num) < 9:
+        return None, None, None
+
+    clean_text = original_text.replace(original_text[start_idx:][:len(raw_num_extracted)], ' ').strip()
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
     final_copy_text = ""
     op_name = ""
 
-    if standard_num.startswith('097'):
-        final_copy_text = standard_num[1:]
+    if full_num.startswith('097'):
+        final_copy_text = full_num[1:]
         op_name = "ATOM"
-    elif standard_num.startswith('096'):
-        final_copy_text = standard_num
+    elif full_num.startswith('096'):
+        final_copy_text = full_num
         op_name = "MYTEL"
-    elif standard_num.startswith(('092', '094', '098')):
-        final_copy_text = f"{base_num} {clean_text}" if clean_text else base_num
+    elif full_num.startswith(('092', '094', '098')):
+        base_part = full_num[2:]
+        final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "MPT"
-    elif standard_num.startswith('099'):
-        final_copy_text = f"{standard_num[1:]} {clean_text}" if clean_text else standard_num[1:]
+    elif full_num.startswith('099'):
+        base_part = full_num[1:]
+        final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "OOREDOO"
     else:
-        final_copy_text = standard_num
+        final_copy_text = full_num
         op_name = "UNKNOWN"
 
     matched_plan = match_exact_plan(op_name, clean_text)
@@ -166,6 +184,12 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     if not edited_text:
         return
 
+    if is_pure_calculation(edited_text):
+        calc_res = extract_and_calculate(edited_text)
+        if calc_res is not None:
+            await update.edited_message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
+            return
+
     new_reply_text, _, _ = process_phone_logic(edited_text)
     if new_reply_text:
         msg_map = context.user_data.get("msg_map", {})
@@ -182,12 +206,6 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
                 context.user_data["msg_map"] = {}
             context.user_data["msg_map"][user_msg_id] = sent_msg.message_id
         return
-
-    if is_pure_calculation(edited_text):
-        calc_res = extract_and_calculate(edited_text)
-        if calc_res is not None:
-            await update.edited_message.reply_text(text=f"`= {calc_res}`", parse_mode="Markdown")
-            return
 
 async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id

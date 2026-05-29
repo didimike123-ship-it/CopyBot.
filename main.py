@@ -9,12 +9,9 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 BOT_TOKEN = "8984373560:AAEApSz6JqW5toSTC8fHfQhbP13_7cJNlvY"
 
 app = Flask(__name__)
-
-# Global Dicts - စိတ်ချရအောင် Global အနေနဲ့ အထိုင်ချထားသည်
 group_sales_reports = {}
-msg_records = {}   # User Message ID -> {"op_name", "plan_name", "chat_id"}
-bot_msg_map = {}   # User Message ID -> Bot Message ID
 
+# ရောင်းချမည့် Operator အလိုက် Plan များ စာရင်း
 OPERATOR_PLANS = {
     "MYTEL": ["o15k plan", "o20k plan", "n15k plan", "n20k plan", "n25k plan", "n30k plan", "1gb", "1.6gb", "3gb", "5gb", "10gb", "on90", "on180", "on69", "on138", "any13", "any41", "any114"],
     "ATOM": ["15k plan", "25k plan", "870(3d)", "1gb(3d)", "1gb(1m)", "point(p)500", "any 150", "any 100", "on 150"],
@@ -24,12 +21,13 @@ OPERATOR_PLANS = {
 
 @app.route('/')
 def home():
-    return "Bot is Running Live!"
+    return "Bot is Running Live Without Channel Ads!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
+# Order စာသားထဲက Plan ကို ရှာဖွေပေးသည့် Function
 def match_exact_plan(op_name, clean_text):
     if op_name not in OPERATOR_PLANS:
         return "Unknown Plan"
@@ -39,38 +37,54 @@ def match_exact_plan(op_name, clean_text):
             return plan.upper()
     return clean_text if clean_text else "General Data"
 
+# မူရင်း Logic အတိုင်း ဖုန်းနံပါတ်နှင့် စာသားများကို စီစစ်သည့်အပိုင်း
 def process_phone_logic(original_text):
     if not original_text:
         return None, None, None
 
-    # ဖုန်းနံပါတ် Pattern အား Space ပါပါ မပါပါ ရှာဖွေခြင်း
-    pattern = r'(?:\+?95[\s*]*9|0[\s*]*9)[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d?'
-    match = re.search(pattern, original_text)
+    # ၁။ စာသားထဲမှာ Space တွေ ဘယ်လိုပဲ ခြားနေပါစေ ဖုန်းနံပါတ် Pattern ကို ရှာဖွေခြင်း
+    match = re.search(r'(?:\+?95[\s*]*9|0[\s*]*9)[\d\s*]{6,20}', original_text)
     if not match:
         return None, None, None
 
-    exact_phone_raw = match.group(0)
-    phone_digits = "".join(re.findall(r'\d+', exact_phone_raw))
+    raw_matched_chunk = match.group(0)
     
+    # ဂဏန်းသက်သက်ပဲ ထုတ်ယူစုစည်းခြင်း
+    phone_digits = "".join(re.findall(r'\d+', raw_matched_chunk))
+    
+    # +959 ပါလာပါက 09 သို့ ပြောင်းလဲခြင်း
     if phone_digits.startswith('959'):
         phone_digits = "09" + phone_digits[3:]
 
-    clean_text = original_text.replace(exact_phone_raw, ' ', 1).strip()
+    # ဖုန်းနံပါတ် အရှည်စစ်ဆေးခြင်း (၁၀ လုံး သို့မဟုတ် ၁၁ လုံး ဖြစ်ရမည်)
+    if not (10 <= len(phone_digits) <= 11):
+        return None, None, None
+
+    # ဖုန်းနံပါတ်ကို ဖြတ်ထုတ်ပြီး ကျန်တဲ့ Order စာသားတွေကို သန့်စင်ခြင်း (Order ရှေ့/နောက် အကုန်ရစေရန်)
+    clean_text = original_text.replace(raw_matched_chunk, ' ').strip()
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
     final_copy_text = ""
     op_name = ""
 
+    # ၂။ မူရင်း Operator အလိုက် ခွဲခြားသည့် Logic အပိုင်း
+    # ATOM Logic - ရှေ့က 0 ဖြုတ်၊ 9 ကနေစယူ၊ နောက်က Order စာသား ဖြတ်ပစ်
     if phone_digits.startswith('097') and len(phone_digits) == 11:
         final_copy_text = phone_digits[1:]
         op_name = "ATOM"
+        
+    # MYTEL Logic - 09 အပြည့်အတိုင်းယူ၊ နောက်က Order စာသား ဖြတ်ပစ်
     elif phone_digits.startswith('096') and (len(phone_digits) == 10 or len(phone_digits) == 11):
-        final_copy_text = phone_digits  # MYTEL ဆိုလျှင် နံပါတ်အတိုင်း ပြန်ပြမည်
+        final_copy_text = phone_digits
         op_name = "MYTEL"
+        
+    # MPT Logic - ရှေ့က 09 ဖြုတ်၊ 2/4/8 ကနေစယူ၊ နောက်က Order စာသားပါ တွဲယူ
     elif phone_digits.startswith(('092', '094', '098')) and len(phone_digits) == 11:
         base_part = phone_digits[2:]
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "MPT"
+        
+    # OOREDOO Logic - ရှေ့က 0 ဖြုတ်၊ 99 ကနေစယူ၊ နောက်က Order စာသားပါ တွဲယူ
     elif phone_digits.startswith('099') and len(phone_digits) == 11:
         base_part = phone_digits[1:]
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
@@ -79,117 +93,45 @@ def process_phone_logic(original_text):
         return None, None, None
 
     matched_plan = match_exact_plan(op_name, clean_text)
-    return f"`{final_copy_text}`", op_name, matched_plan
+    return f"`{final_copy_text.strip()}`", op_name, matched_plan
 
+# မက်ဆေ့ချ်များ ဝင်လာပါက လုပ်ဆောင်ပေးမည့်အဆင့်
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
+    if not update.message or not (update.message.text or update.message.caption):
         return
-
-    incoming_text = update.message.text if update.message.text else update.message.caption
-    if not incoming_text:
-        return
-
+        
+    incoming_text = update.message.text or update.message.caption
     reply_text, op_name, plan_name = process_phone_logic(incoming_text)
+    
+    # မူရင်း Logic အတိုင်း စာရင်းသွင်းပြီး ကွက်တိပြန်ထုတ်ပေးခြင်း (Channel Join Message လုံးဝမပါပါ)
     if reply_text:
         chat_id = update.message.chat_id
-        user_msg_id = update.message.message_id
         current_date = datetime.now().strftime("%Y-%m-%d")
-
+        
         if chat_id not in group_sales_reports:
             group_sales_reports[chat_id] = {"date": current_date, "data": {}}
-
+            
         report = group_sales_reports[chat_id]
         if report["date"] != current_date:
-            report["date"] = current_date
-            report["data"] = {}
-
+            report["date"], report["data"] = current_date, {}
+            
         if op_name not in report["data"]:
             report["data"][op_name] = {}
             
         report["data"][op_name][plan_name] = report["data"][op_name].get(plan_name, 0) + 1
         
-        # စာရင်းမှတ်တမ်း သိမ်းဆည်းခြင်း
-        msg_records[user_msg_id] = {"op_name": op_name, "plan_name": plan_name, "chat_id": chat_id}
+        # ယူဇာက အလွယ်တကူ Copy ကူးနိုင်ရန် Code Block ပုံစံဖြင့်သာ ကွက်တိ ပြန်ပို့ပေးမည်
+        await update.message.reply_text(text=reply_text, parse_mode="Markdown", disable_web_page_preview=True)
 
-        sent_msg = await update.message.reply_text(text=reply_text, parse_mode="Markdown", disable_web_page_preview=True)
-        
-        # User Message ID နှင့် Bot Reply ID ချိတ်ဆက်မှုကို တိုက်ရိုက်သိမ်းသည်
-        bot_msg_map[user_msg_id] = sent_msg.message_id
-        return
-
-async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.edited_message:
-        return
-
-    user_msg_id = update.edited_message.message_id
-    chat_id = update.edited_message.chat_id
-    edited_text = update.edited_message.text if update.edited_message.text else update.edited_message.caption
-    if not edited_text:
-        return
-
-    new_reply_text, new_op, new_plan = process_phone_logic(edited_text)
-    if new_reply_text:
-        
-        # ၁။ စာရင်းဟောင်းကို ပြန်နှုတ်ခြင်း
-        if user_msg_id in msg_records:
-            old_record = msg_records[user_msg_id]
-            old_op = old_record["op_name"]
-            old_plan = old_record["plan_name"]
-            old_chat_id = old_record["chat_id"]
-            
-            if old_chat_id in group_sales_reports and old_op in group_sales_reports[old_chat_id]["data"]:
-                if old_plan in group_sales_reports[old_chat_id]["data"][old_op]:
-                    group_sales_reports[old_chat_id]["data"][old_op][old_plan] -= 1
-                    if group_sales_reports[old_chat_id]["data"][old_op][old_plan] <= 0:
-                        del group_sales_reports[old_chat_id]["data"][old_op][old_plan]
-
-        # ၂။ စာရင်းအသစ်ကို ပြန်ပေါင်းထည့်ခြင်း
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        if chat_id not in group_sales_reports:
-            group_sales_reports[chat_id] = {"date": current_date, "data": {}}
-        
-        report = group_sales_reports[chat_id]
-        if new_op not in report["data"]:
-            report["data"][new_op] = {}
-        
-        report["data"][new_op][new_plan] = report["data"][new_op].get(new_plan, 0) + 1
-        msg_records[user_msg_id] = {"op_name": new_op, "plan_name": new_plan, "chat_id": chat_id}
-
-        # ၃။ Telegram ပေါ်ရှိ Bot Message စာသားဟောင်းကို Edit ပြုလုပ်ခြင်း
-        bot_msg_id = bot_msg_map.get(user_msg_id)
-
-        if bot_msg_id:
-            try:
-                # အရင်ပို့ထားဖူးသော Bot message အား စာသားအသစ်ဖြင့် တိုက်ရိုက် Edit ခိုင်းခြင်း
-                await context.bot.edit_message_text(
-                    chat_id=chat_id, 
-                    message_id=bot_msg_id, 
-                    text=new_reply_text, 
-                    parse_mode="Markdown", 
-                    disable_web_page_preview=True
-                )
-                print(f"[SUCCESS] Edited Bot Message for User Msg ID: {user_msg_id}")
-            except Exception as e:
-                # ပြင်မရပါက နောက်ဆက်တွဲအနေဖြင့် Reply အသစ် ထပ်ပို့ပေးမည်
-                print(f"[ERROR] Could not edit message: {e}")
-                sent_msg = await update.edited_message.reply_text(text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
-                bot_msg_map[user_msg_id] = sent_msg.message_id
-        else:
-            # Map ထဲတွင် ရှာမတွေ့ပါက Reply အသစ် ထပ်ပို့ပေးမည်
-            print(f"[INFO] Bot message ID not found in map for User Msg ID: {user_msg_id}. Sending new reply.")
-            sent_msg = await update.edited_message.reply_text(text=new_reply_text, parse_mode="Markdown", disable_web_page_preview=True)
-            bot_msg_map[user_msg_id] = sent_msg.message_id
-        return
-
+# စာရင်းကြည့်ရန် Command
 async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     report = group_sales_reports.get(chat_id)
-
     if not report or not report["data"]:
-        await update.message.reply_text(text="📊 ယနေ့အတွက် ဤ Group တွင် ရောင်းချထားသော စာရင်းမရှိသေးပါခင်ဗျာ။")
+        await update.message.reply_text(text="📊 ယနေ့အတွက် ရောင်းချထားသော စာရင်းမရှိသေးပါခင်ဗျာ။")
         return
-
-    report_msg = f"📊 *Group Sales Report*\n📅 Date: {report['date']}\n\n"
+        
+    report_msg = f"📊 *Sales Report* ({report['date']})\n\n"
     total_all = 0
     for op in ["ATOM", "MYTEL", "OOREDOO", "MPT"]:
         if op in report["data"]:
@@ -199,32 +141,23 @@ async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for plan, count in plans.items():
                 report_msg += f"  ▫️ {plan} : {count} ကြိမ်\n"
                 op_total += count
-            report_msg += f"  🔻 Subtotal: {op_total} ကြိမ်\n\n"
+            report_msg += f"  🔻 Total: {op_total} ကြိမ်\n\n"
             total_all += op_total
             
-    report_msg += f"---------------------------\n📈 *Group Total Sales: {total_all} ကြိမ်*"
+    report_msg += f"📈 *Grand Total: {total_all} ကြိမ်*"
     await update.message.reply_text(text=report_msg, parse_mode="Markdown")
-
-async def clear_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
-    if chat_id in group_sales_reports:
-        group_sales_reports[chat_id]["data"] = {}
-    await update.message.reply_text(text="✅ ဤ Group အတွက် တစ်နေ့တာ စာရင်းများကို 0 သို့ ပြန်ပြင်ဆင်ပြီးပါပြီ။")
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # စာရင်းကြည့်ရန် Command သက်သက်သာ ထားရှိခြင်း
     application.add_handler(CommandHandler("report", get_report))
-    application.add_handler(CommandHandler("clear", clear_report))
     
+    # Message ဖတ်သည့်အပိုင်းတွင် မလိုအပ်သော Channel Join ညွှန်ကြားချက်များ လုံးဝမပါဝင်စေဘဲ တိုက်ရိုက်အလုပ်လုပ်စေခြင်း
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler((filters.UpdateType.EDITED_MESSAGE) & (filters.TEXT | filters.PHOTO), handle_edited_message))
     
-    server_thread = Thread(target=run_web_server)
-    server_thread.daemon = True
-    server_thread.start()
-    
-    print("Bot is polling successfully...")
+    Thread(target=run_web_server, daemon=True).start()
+    print("Bot is running properly without advertisement popups...")
     application.run_polling()
 
 if __name__ == '__main__':

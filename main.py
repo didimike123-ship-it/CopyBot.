@@ -13,7 +13,8 @@ app = Flask(__name__)
 # Global Dicts 
 group_sales_reports = {}
 msg_records = {}   
-bot_msg_map = {}   
+bot_msg_map = {}
+sent_photo_ids = {}
 
 OPERATOR_PLANS = {
     "MYTEL": ["o15k plan", "o20k plan", "n15k plan", "n20k plan", "n25k plan", "n30k plan", "1gb", "1.6gb", "3gb", "5gb", "10gb", "on90", "on180", "on69", "on138", "any13", "any41", "any114"],
@@ -43,7 +44,6 @@ def process_phone_logic(original_text):
     if not original_text:
         return None, None, None
 
-    # ဖုန်းနံပါတ်ရှာဖွေသည့်စနစ် (ပိုမိုသန့်စင်ထားသည်)
     pattern = r'(?:\+?95[\s*]*9|0[\s*]*9)[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d?'
     match = re.search(pattern, original_text)
     if not match:
@@ -62,7 +62,8 @@ def process_phone_logic(original_text):
     op_name = ""
 
     if phone_digits.startswith('097') and len(phone_digits) == 11:
-        final_copy_text = phone_digits[1:]
+        base_part = phone_digits[1:]  # 9765432109
+        final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "ATOM"
     elif phone_digits.startswith('096') and (len(phone_digits) == 10 or len(phone_digits) == 11):
         final_copy_text = phone_digits  
@@ -79,12 +80,40 @@ def process_phone_logic(original_text):
         return None, None, None
 
     matched_plan = match_exact_plan(op_name, clean_text)
-    
-    # ⚠️ Link Preview မထွက်အောင် ဤနေရာတွင် စာသားကို code block format ပြောင်းလဲလိုက်ပါသည်
     return f"`{final_copy_text}`", op_name, matched_plan
+
+
+def check_duplicate_photo(chat_id, message):
+    if not message.photo:
+        return False, None
+
+    file_unique_id = message.photo[-1].file_unique_id
+
+    if chat_id not in sent_photo_ids:
+        sent_photo_ids[chat_id] = {}
+
+    if file_unique_id in sent_photo_ids[chat_id]:
+        original_msg_id = sent_photo_ids[chat_id][file_unique_id]
+        return True, original_msg_id
+
+    sent_photo_ids[chat_id][file_unique_id] = message.message_id
+    return False, None
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
+        return
+
+    chat_id = update.message.chat_id
+
+    is_dup, original_msg_id = check_duplicate_photo(chat_id, update.message)
+    if is_dup:
+        await update.message.reply_text(
+            text=f"⚠️ *ဤပုံကို ပို့ပြီးသားဖြစ်နေပါသည်။*\n\n"
+                 f"ထပ်တူပုံကို တမင်တကာ ထပ်တင်နေပါသလား?\n"
+                 f"မူရင်း Message ID: `{original_msg_id}`",
+            parse_mode="Markdown"
+        )
         return
 
     incoming_text = update.message.text if update.message.text else update.message.caption
@@ -93,8 +122,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_text, op_name, plan_name = process_phone_logic(incoming_text)
     if reply_text:
-        chat_id = update.message.chat_id
-        user_msg_id = update.message.message_id
         current_date = datetime.now().strftime("%Y-%m-%d")
 
         if chat_id not in group_sales_reports:
@@ -109,9 +136,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report["data"][op_name] = {}
             
         report["data"][op_name][plan_name] = report["data"][op_name].get(plan_name, 0) + 1
+        user_msg_id = update.message.message_id
         msg_records[user_msg_id] = {"op_name": op_name, "plan_name": plan_name, "chat_id": chat_id}
 
-        # ⚠️ Link Preview ကို အပိတ်ခိုင်းထားပါသည် (disable_web_page_preview=True)
         sent_msg = await update.message.reply_text(
             text=reply_text, 
             parse_mode="Markdown", 
@@ -120,12 +147,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_msg_map[user_msg_id] = sent_msg.message_id
         return
 
+
 async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.edited_message:
         return
 
     user_msg_id = update.edited_message.message_id
     chat_id = update.edited_message.chat_id
+
+    if update.edited_message.photo:
+        file_unique_id = update.edited_message.photo[-1].file_unique_id
+        if chat_id in sent_photo_ids and file_unique_id in sent_photo_ids[chat_id]:
+            existing_id = sent_photo_ids[chat_id][file_unique_id]
+            if existing_id != user_msg_id:
+                await update.edited_message.reply_text(
+                    text=f"⚠️ *ဤပုံကို ပို့ပြီးသားဖြစ်နေပါသည်။*\n\n"
+                         f"မူရင်း Message ID: `{existing_id}`",
+                    parse_mode="Markdown"
+                )
+                return
+
     edited_text = update.edited_message.text if update.edited_message.text else update.edited_message.caption
     if not edited_text:
         return
@@ -133,7 +174,6 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     new_reply_text, new_op, new_plan = process_phone_logic(edited_text)
     if new_reply_text:
         
-        # ၁။ စာရင်းဟောင်း ပြန်နှုတ်
         if user_msg_id in msg_records:
             old_record = msg_records[user_msg_id]
             old_op = old_record["op_name"]
@@ -146,7 +186,6 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
                     if group_sales_reports[old_chat_id]["data"][old_op][old_plan] <= 0:
                         del group_sales_reports[old_chat_id]["data"][old_op][old_plan]
 
-        # ၂။ စာရင်းသစ် ပြန်ပေါင်း
         current_date = datetime.now().strftime("%Y-%m-%d")
         if chat_id not in group_sales_reports:
             group_sales_reports[chat_id] = {"date": current_date, "data": {}}
@@ -158,12 +197,10 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
         report["data"][new_op][new_plan] = report["data"][new_op].get(new_plan, 0) + 1
         msg_records[user_msg_id] = {"op_name": new_op, "plan_name": new_plan, "chat_id": chat_id}
 
-        # ၃။ Bot စာသားဟောင်းအား အမှန်အတိုင်း Live Edit ပြုလုပ်ခြင်း
         bot_msg_id = bot_msg_map.get(user_msg_id)
 
         if bot_msg_id:
             try:
-                # ⚠️ Edit လုပ်ရာတွင်လည်း Link Preview ကို ပိတ်ခိုင်းထားပါသည်
                 await context.bot.edit_message_text(
                     chat_id=chat_id, 
                     message_id=bot_msg_id, 
@@ -186,6 +223,7 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
             )
             bot_msg_map[user_msg_id] = sent_msg.message_id
         return
+
 
 async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -211,11 +249,15 @@ async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report_msg += f"---------------------------\n📈 *Group Total Sales: {total_all} ကြိမ်*"
     await update.message.reply_text(text=report_msg, parse_mode="Markdown")
 
+
 async def clear_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     if chat_id in group_sales_reports:
         group_sales_reports[chat_id]["data"] = {}
-    await update.message.reply_text(text="✅ ဤ Group အတွက် တစ်နေ့တာ စာရင်းများကို 0 သို့ ပြန်ပြင်ဆင်ပြီးပါပြီ။")
+    if chat_id in sent_photo_ids:
+        sent_photo_ids[chat_id] = {}
+    await update.message.reply_text(text="✅ ဤ Group အတွက် တစ်နေ့တာ စာရင်းများနှင့် ပို့ပြီးသားပုံမှတ်တမ်းများကို 0 သို့ ပြန်ပြင်ဆင်ပြီးပါပြီ။")
+
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
@@ -230,7 +272,7 @@ def main():
     server_thread.daemon = True
     server_thread.start()
     
-    print("Bot is polling successfully with link-preview disabled...")
+    print("Bot is polling successfully with duplicate photo detection enabled...")
     application.run_polling()
 
 if __name__ == '__main__':

@@ -3,8 +3,8 @@ import re
 from datetime import datetime
 from threading import Thread
 from flask import Flask
-from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CopyTextButton
+from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
 BOT_TOKEN = "8811116753:AAHiJWkdf7EPY4ITAklh9Go_sgkg6t1NkWw"
 
@@ -41,13 +41,16 @@ def match_exact_plan(op_name, clean_text):
     return clean_text if clean_text else "General Data"
 
 def process_phone_logic(original_text):
+    """
+    Returns (formatted_text_for_markdown, plain_text_for_copy, op_name, matched_plan)
+    """
     if not original_text:
-        return None, None, None
+        return None, None, None, None
 
     pattern = r'(?:\+?95[\s*]*9|0[\s*]*9)[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d[\s*]*\d?'
     match = re.search(pattern, original_text)
     if not match:
-        return None, None, None
+        return None, None, None, None
 
     exact_phone_raw = match.group(0)
     phone_digits = "".join(re.findall(r'\d+', exact_phone_raw))
@@ -77,10 +80,24 @@ def process_phone_logic(original_text):
         final_copy_text = f"{base_part} {clean_text}" if clean_text else base_part
         op_name = "OOREDOO"
     else:
-        return None, None, None
+        return None, None, None, None
 
     matched_plan = match_exact_plan(op_name, clean_text)
-    return f"`{final_copy_text}`", op_name, matched_plan
+    formatted_text = f"`{final_copy_text}`"
+    return formatted_text, final_copy_text, op_name, matched_plan
+
+
+def build_reply_keyboard(plain_text, user_msg_id):
+    """Builds the Copy + Delete inline keyboard for a bot reply."""
+    # CopyTextButton text has a 256 char limit, trim just in case
+    copy_value = plain_text[:256]
+    keyboard = [
+        [
+            InlineKeyboardButton("📋 Copy", copy_text=CopyTextButton(text=copy_value)),
+            InlineKeyboardButton("🗑 Delete", callback_data=f"delmsg:{user_msg_id}")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 
 def check_duplicate_photo(chat_id, message):
@@ -120,7 +137,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not incoming_text:
         return
 
-    reply_text, op_name, plan_name = process_phone_logic(incoming_text)
+    reply_text, plain_text, op_name, plan_name = process_phone_logic(incoming_text)
     if reply_text:
         current_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -137,12 +154,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         report["data"][op_name][plan_name] = report["data"][op_name].get(plan_name, 0) + 1
         user_msg_id = update.message.message_id
-        msg_records[user_msg_id] = {"op_name": op_name, "plan_name": plan_name, "chat_id": chat_id}
+        sender_id = update.message.from_user.id if update.message.from_user else None
+        msg_records[user_msg_id] = {
+            "op_name": op_name,
+            "plan_name": plan_name,
+            "chat_id": chat_id,
+            "user_id": sender_id,
+        }
 
         sent_msg = await update.message.reply_text(
             text=reply_text, 
             parse_mode="Markdown", 
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
+            reply_markup=build_reply_keyboard(plain_text, user_msg_id)
         )
         bot_msg_map[user_msg_id] = sent_msg.message_id
         return
@@ -171,7 +195,7 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     if not edited_text:
         return
 
-    new_reply_text, new_op, new_plan = process_phone_logic(edited_text)
+    new_reply_text, new_plain_text, new_op, new_plan = process_phone_logic(edited_text)
     if new_reply_text:
         
         if user_msg_id in msg_records:
@@ -195,9 +219,16 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
             report["data"][new_op] = {}
         
         report["data"][new_op][new_plan] = report["data"][new_op].get(new_plan, 0) + 1
-        msg_records[user_msg_id] = {"op_name": new_op, "plan_name": new_plan, "chat_id": chat_id}
+        sender_id = update.edited_message.from_user.id if update.edited_message.from_user else None
+        msg_records[user_msg_id] = {
+            "op_name": new_op,
+            "plan_name": new_plan,
+            "chat_id": chat_id,
+            "user_id": sender_id,
+        }
 
         bot_msg_id = bot_msg_map.get(user_msg_id)
+        new_keyboard = build_reply_keyboard(new_plain_text, user_msg_id)
 
         if bot_msg_id:
             try:
@@ -206,23 +237,78 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
                     message_id=bot_msg_id, 
                     text=new_reply_text, 
                     parse_mode="Markdown", 
-                    disable_web_page_preview=True
+                    disable_web_page_preview=True,
+                    reply_markup=new_keyboard
                 )
             except Exception:
                 sent_msg = await update.edited_message.reply_text(
                     text=new_reply_text, 
                     parse_mode="Markdown", 
-                    disable_web_page_preview=True
+                    disable_web_page_preview=True,
+                    reply_markup=new_keyboard
                 )
                 bot_msg_map[user_msg_id] = sent_msg.message_id
         else:
             sent_msg = await update.edited_message.reply_text(
                 text=new_reply_text, 
                 parse_mode="Markdown", 
-                disable_web_page_preview=True
+                disable_web_page_preview=True,
+                reply_markup=new_keyboard
             )
             bot_msg_map[user_msg_id] = sent_msg.message_id
         return
+
+
+async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data or ""
+
+    if not data.startswith("delmsg:"):
+        return
+
+    try:
+        user_msg_id = int(data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        await query.answer("⚠️ Data မှားနေပါသည်။", show_alert=True)
+        return
+
+    chat_id = query.message.chat_id
+    record = msg_records.get(user_msg_id)
+
+    # --- Permission check: only the original sender or a group admin can delete ---
+    presser_id = query.from_user.id
+    is_owner = record is not None and record.get("user_id") == presser_id
+
+    is_admin = False
+    try:
+        member = await context.bot.get_chat_member(chat_id, presser_id)
+        is_admin = member.status in ("administrator", "creator")
+    except Exception:
+        pass
+
+    if not (is_owner or is_admin):
+        await query.answer("⚠️ မူရင်းပို့သူ သို့မဟုတ် Admin မှသာ ဖျက်နိုင်ပါသည်။", show_alert=True)
+        return
+
+    # --- Revert the count from today's report ---
+    if record and record["chat_id"] == chat_id:
+        op_name = record["op_name"]
+        plan_name = record["plan_name"]
+        if chat_id in group_sales_reports and op_name in group_sales_reports[chat_id]["data"]:
+            if plan_name in group_sales_reports[chat_id]["data"][op_name]:
+                group_sales_reports[chat_id]["data"][op_name][plan_name] -= 1
+                if group_sales_reports[chat_id]["data"][op_name][plan_name] <= 0:
+                    del group_sales_reports[chat_id]["data"][op_name][plan_name]
+        del msg_records[user_msg_id]
+
+    bot_msg_map.pop(user_msg_id, None)
+
+    # --- Delete the bot's message ---
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
+        await query.answer("✅ ဖျက်ပြီးပါပြီ")
+    except Exception:
+        await query.answer("⚠️ ဖျက်ရန် မအောင်မြင်ပါ (48 နာရီကျော်ပြီး / Bot ခွင့်ပြုချက်မရှိ)", show_alert=True)
 
 
 async def get_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -267,6 +353,7 @@ def main():
     
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler((filters.UpdateType.EDITED_MESSAGE) & (filters.TEXT | filters.PHOTO), handle_edited_message))
+    application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern=r"^delmsg:"))
     
     server_thread = Thread(target=run_web_server)
     server_thread.daemon = True
